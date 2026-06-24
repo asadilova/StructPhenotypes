@@ -8,9 +8,16 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-from get_alpha_fold import AlphaFoldRetriever
-from get_clinvar import ClinVarRetriever
-from structpheno.get_alphamissense import AlphaMissenseRetriever
+try:
+    from .get_alpha_fold import AlphaFoldRetriever
+    from .get_alphamissense import AlphaMissenseRetriever
+    from .get_clinvar import ClinVarRetriever
+    from .visualize import visualize
+except ImportError:
+    from get_alpha_fold import AlphaFoldRetriever
+    from get_alphamissense import AlphaMissenseRetriever
+    from get_clinvar import ClinVarRetriever
+    from visualize import visualize
 
 
 def _retrieve_source(source_name: str, retrieve: Callable[[], Any]) -> dict[str, Any]:
@@ -39,12 +46,14 @@ def build_report(gene: str) -> dict[str, Any]:
 
     alpha_missense = _retrieve_source("AlphaMissense", lambda: AlphaMissenseRetriever(gene).get_alpha_missense_data())
 
-    return {
+    report = {
         "gene": gene,
         "clinvar": clinvar,
         "alpha_fold": alpha_fold,
         "alpha_missense": alpha_missense,
     }
+    report["visualization"] = _retrieve_source("Visualization", lambda: visualize(report))
+    return report
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -87,4 +96,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
-
