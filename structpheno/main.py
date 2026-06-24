@@ -294,6 +294,12 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("Wrote report JSON to %s", report_path)
     _print_report_summary(report, report_path, viewer_path)
 
+    alpha_fold_status = report.get("alpha_fold", {}).get("status")
+    visualization_status = report.get("visualization", {}).get("status")
+    if alpha_fold_status != "ok" or visualization_status != "ok":
+        logger.error("Pipeline failed: AlphaFold structure/viewer generation did not complete successfully.")
+        return 1
+
     return 0
 
 

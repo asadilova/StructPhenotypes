@@ -314,7 +314,7 @@ def _annotation_cache_is_usable(annotations: dict[str, Any], report: dict[str, A
 
 
 def _pdb_text_for_report(report: dict[str, Any]) -> tuple[str, str]:
-    """Return PDB text from AlphaFold metadata or the embedded example."""
+    """Return PDB text from AlphaFold metadata or raise if unavailable."""
     alpha_fold = report.get("alpha_fold", {})
     if isinstance(alpha_fold, dict):
         data = alpha_fold.get("data", {})
@@ -324,8 +324,9 @@ def _pdb_text_for_report(report: dict[str, Any]) -> tuple[str, str]:
                 path = Path(pdb_path)
                 if path.exists():
                     return path.read_text(encoding="utf-8", errors="replace"), "alphafold"
+                raise FileNotFoundError(f"AlphaFold PDB path does not exist: {path}")
 
-    return EXAMPLE_PDB, "example"
+    raise FileNotFoundError("AlphaFold structure is required for visualization but no PDB file was found.")
 
 
 def _extract_alphafold_confidence(report: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], str]:
@@ -1019,7 +1020,7 @@ def _render_html(report: dict[str, Any], annotations: dict[str, Any], pdb_text: 
   <section class="details">
     <div class="panel">
       <h2>Phenotype Sets</h2>
-      <p>Tick phenotypes to override the base coloring. Selected phenotypes use their assigned color; other phenotype residues become light gray.</p>
+        <p>Tick phenotypes to overlay colored residue markers on top of the current scaffold coloring.</p>
       <div id="phenotypeControls" class="phenotype-panel"></div>
     </div>
     <div class="panel">
@@ -1180,6 +1181,7 @@ def _render_html(report: dict[str, Any], annotations: dict[str, Any], pdb_text: 
         renderScene(restOpacity);
         currentFocusResidue = focusResidue;
         currentSceneKey = sceneKey(restOpacity);
+        redrawShapeOverlays();
         applyFocus(focusResidue, zoomFocus);
         updateLegend();
         viewer.render();
@@ -1190,14 +1192,6 @@ def _render_html(report: dict[str, Any], annotations: dict[str, Any], pdb_text: 
           return;
         }
         const focusResidue = selectedFocusResidue();
-        const restOpacity = focusResidue ? selectedBackgroundOpacity() : 1.0;
-        const nextSceneKey = sceneKey(restOpacity);
-
-        if (nextSceneKey !== currentSceneKey) {
-          applyStyle(false);
-          return;
-        }
-
         clearShapes();
         redrawShapeOverlays();
         applyFocus(focusResidue, false);
@@ -1226,32 +1220,25 @@ def _render_html(report: dict[str, Any], annotations: dict[str, Any], pdb_text: 
       }
 
       function renderScene(opacity) {
-        const phenotypes = selectedPhenotypes();
-        if (phenotypes.size > 0) {
-          applyPhenotypeSets(phenotypes, opacity);
-        } else {
-          applyBaseColorMode(opacity);
-        }
+        applyBaseColorMode(opacity);
       }
 
       function redrawShapeOverlays() {
         const focusResidue = selectedFocusResidue();
         const opacity = focusResidue ? selectedBackgroundOpacity() : 1.0;
         const phenotypes = selectedPhenotypes();
+        if (isSurfaceStyle()) {
+          addSurfaceModeMarkers(opacity);
+        }
         if (phenotypes.size > 0) {
           addPhenotypeMarkers(phenotypes);
-          return;
         }
-          if (isSurfaceStyle()) {
-            addSurfaceModeMarkers(opacity);
-          }
-        }
+      }
 
       function sceneKey(opacity) {
-        const phenotypes = selectedPhenotypes();
         return JSON.stringify({
           renderStyle: document.getElementById("renderStyle").value,
-          baseColorMode: phenotypes.size > 0 ? "phenotype-overlay" : document.getElementById("baseColorMode").value,
+          baseColorMode: document.getElementById("baseColorMode").value,
           opacity: Number(opacity.toFixed(2)),
         });
       }
@@ -1308,12 +1295,6 @@ def _render_html(report: dict[str, Any], annotations: dict[str, Any], pdb_text: 
         setStatus("Coloring ClinVar residues by strongest pathogenicity label.");
       }
     }
-
-      function applyPhenotypeSets(phenotypes, opacity) {
-        styleWholeProtein("#d9d9d9", opacity);
-        addPhenotypeMarkers(phenotypes);
-        setStatus("Phenotype set overlay active. Selected residues are shown as colored circles on a gray protein.");
-      }
 
       function addPhenotypeMarkers(phenotypes) {
         getResidueAnnotations().forEach((annotation) => {
@@ -1484,73 +1465,81 @@ def _render_html(report: dict[str, Any], annotations: dict[str, Any], pdb_text: 
         });
       }
 
-    function updateLegend() {
-      const legend = document.getElementById("colorLegend");
-      const phenotypes = selectedPhenotypes();
-      const mode = document.getElementById("baseColorMode").value;
+      function updateLegend() {
+        const legend = document.getElementById("colorLegend");
+        const phenotypes = selectedPhenotypes();
+        const mode = document.getElementById("baseColorMode").value;
+        const sections = [];
 
-      if (phenotypes.size > 0) {
-        const selectedItems = Array.from(phenotypes.entries())
-          .map(([phenotype, color]) => legendItem(color, phenotype))
-          .join("");
-        legend.innerHTML = `
-          <p class="legend-note">Phenotype overlay is active. Selected residues are shown as colored circles on a gray protein; all other phenotype residues stay gray.</p>
-          <div class="legend">${selectedItems}${legendItem("#d9d9d9", "Other phenotype residues")}</div>
-        `;
-        return;
+        sections.push(baseLegend(mode));
+
+        if (phenotypes.size > 0) {
+          const selectedItems = Array.from(phenotypes.entries())
+            .map(([phenotype, color]) => legendItem(color, phenotype))
+            .join("");
+          sections.push(`
+            <p class="legend-note">Phenotype overlay is active. The scaffold keeps the current base coloring mode, while selected phenotypes appear as colored residue markers.</p>
+            <div class="legend">${selectedItems}</div>
+          `);
+        }
+        legend.innerHTML = sections.join("");
       }
 
-      if (mode === "gray") {
-        legend.innerHTML = `
-          <p class="legend-note">Neutral gray protein with no annotation coloring applied.</p>
-          <div class="legend">${legendItem("#d9d9d9", "Protein")}</div>
-        `;
-      } else if (mode === "missense-gradient") {
-        legend.innerHTML = `
-          <p class="legend-note">AlphaMissense mean pathogenicity score.</p>
-          <div class="colorbar">
-            <div class="colorbar-track" style="background: linear-gradient(90deg, #2b83ba, #ffffbf, #d7191c);"></div>
-            <div class="colorbar-labels"><span>0 benign-like</span><span>0.5</span><span>1 pathogenic-like</span></div>
-          </div>
-        `;
-      } else if (mode === "missense-class") {
-        legend.innerHTML = `
-          <p class="legend-note">AlphaMissense classification by residue mean score.</p>
-          <div class="legend">
-            ${legendItem(MISSENSE_CLASS_COLORS.benign, "Benign")}
-            ${legendItem(MISSENSE_CLASS_COLORS.ambiguous, "Ambiguous")}
-            ${legendItem(MISSENSE_CLASS_COLORS.pathogenic, "Pathogenic")}
-          </div>
-        `;
-      } else if (mode === "alphafold-confidence") {
-        legend.innerHTML = `
-          <p class="legend-note">AlphaFold confidence parsed from PDB B-factor/pLDDT values.</p>
-          <div class="colorbar">
-            <div class="colorbar-track" style="background: linear-gradient(90deg, #d62728, #c65d5b, #8e6e83, #1f77b4);"></div>
-            <div class="colorbar-labels"><span>0 very low</span><span>50 low</span><span>70 confident</span><span>100 very high</span></div>
-          </div>
-        `;
-      } else if (mode === "clinvar-pathogenicity") {
-        legend.innerHTML = `
-          <p class="legend-note">Strongest ClinVar pathogenicity label at each residue.</p>
-          <div class="legend">
-            ${legendItem("#b2182b", "Pathogenic")}
-            ${legendItem("#ef8a62", "Likely pathogenic")}
-            ${legendItem("#fddbc7", "Uncertain/conflicting")}
-            ${legendItem("#d1e5f0", "Likely benign")}
-            ${legendItem("#d9d9d9", "Benign or unannotated")}
-          </div>
-        `;
-      } else {
-        legend.innerHTML = `
-          <p class="legend-note">Default 3Dmol spectrum coloring. Pick another base color mode or tick phenotype sets for annotation colors.</p>
-          <div class="colorbar">
-            <div class="colorbar-track" style="background: linear-gradient(90deg, #304ffe, #00bcd4, #4caf50, #ffeb3b, #f44336);"></div>
-            <div class="colorbar-labels"><span>N terminus</span><span>C terminus</span></div>
-          </div>
-        `;
+      function baseLegend(mode) {
+        if (mode === "gray") {
+          return `
+            <p class="legend-note">Neutral gray protein with no annotation coloring applied.</p>
+            <div class="legend">${legendItem("#d9d9d9", "Protein")}</div>
+          `;
+        }
+        if (mode === "missense-gradient") {
+          return `
+            <p class="legend-note">AlphaMissense mean pathogenicity score.</p>
+            <div class="colorbar">
+              <div class="colorbar-track" style="background: linear-gradient(90deg, #2b83ba, #ffffbf, #d7191c);"></div>
+              <div class="colorbar-labels"><span>0 benign-like</span><span>0.5</span><span>1 pathogenic-like</span></div>
+            </div>
+          `;
+        }
+        if (mode === "missense-class") {
+          return `
+            <p class="legend-note">AlphaMissense classification by residue mean score.</p>
+            <div class="legend">
+              ${legendItem(MISSENSE_CLASS_COLORS.benign, "Benign")}
+              ${legendItem(MISSENSE_CLASS_COLORS.ambiguous, "Ambiguous")}
+              ${legendItem(MISSENSE_CLASS_COLORS.pathogenic, "Pathogenic")}
+            </div>
+          `;
+        }
+        if (mode === "alphafold-confidence") {
+          return `
+            <p class="legend-note">AlphaFold confidence parsed from PDB B-factor/pLDDT values.</p>
+            <div class="colorbar">
+              <div class="colorbar-track" style="background: linear-gradient(90deg, #d62728, #c65d5b, #8e6e83, #1f77b4);"></div>
+              <div class="colorbar-labels"><span>0 very low</span><span>50 low</span><span>70 confident</span><span>100 very high</span></div>
+            </div>
+          `;
+        }
+        if (mode === "clinvar-pathogenicity") {
+          return `
+            <p class="legend-note">Strongest ClinVar pathogenicity label at each residue.</p>
+            <div class="legend">
+              ${legendItem("#b2182b", "Pathogenic")}
+              ${legendItem("#ef8a62", "Likely pathogenic")}
+              ${legendItem("#fddbc7", "Uncertain/conflicting")}
+              ${legendItem("#d1e5f0", "Likely benign")}
+              ${legendItem("#d9d9d9", "Benign or unannotated")}
+            </div>
+          `;
+        }
+        return `
+            <p class="legend-note">Default 3Dmol spectrum coloring. Phenotype residue markers can be overlaid on top.</p>
+            <div class="colorbar">
+              <div class="colorbar-track" style="background: linear-gradient(90deg, #304ffe, #00bcd4, #4caf50, #ffeb3b, #f44336);"></div>
+              <div class="colorbar-labels"><span>N terminus</span><span>C terminus</span></div>
+            </div>
+          `;
       }
-    }
 
     function legendItem(color, label) {
       return `<span class="legend-item"><span class="swatch" style="background:${color}"></span>${escapeHtml(label)}</span>`;
@@ -1637,7 +1626,7 @@ def _render_html(report: dict[str, Any], annotations: dict[str, Any], pdb_text: 
       function focusCameraOnResidue(residue) {
         viewer.zoomTo({ resi: residue });
         if (typeof viewer.zoom === "function") {
-          viewer.zoom(0.78, 250);
+          viewer.zoom(0.99, 250);
         }
       }
 
