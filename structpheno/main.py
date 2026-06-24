@@ -36,7 +36,7 @@ def _retrieve_source(source_name: str, retrieve: Callable[[], Any]) -> dict[str,
         }
 
 
-def build_report(gene: str) -> dict[str, Any]:
+def build_report(gene: str, viewer_path: Path | None = None) -> dict[str, Any]:
     """Build one combined report for a gene symbol."""
     gene = gene.strip()
 
@@ -52,7 +52,10 @@ def build_report(gene: str) -> dict[str, Any]:
         "alpha_fold": alpha_fold,
         "alpha_missense": alpha_missense,
     }
-    report["visualization"] = _retrieve_source("Visualization", lambda: visualize(report))
+    report["visualization"] = _retrieve_source(
+        "Visualization",
+        lambda: visualize(report, viewer_path),
+    )
     return report
 
 
@@ -75,13 +78,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Print indented JSON to stdout.",
     )
+    parser.add_argument(
+        "--viewer",
+        type=Path,
+        help="Optional path to write a local 3Dmol.js HTML viewer.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     """Run the StructPhenotypes CLI."""
     args = parse_args(argv)
-    report = build_report(args.gene)
+    report = build_report(args.gene, args.viewer)
     json_indent = 2 if args.pretty else None
     json_text = json.dumps(report, indent=json_indent)
 
